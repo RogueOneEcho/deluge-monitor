@@ -1,0 +1,154 @@
+#!/bin/bash
+
+RETRY=${RETRY:-"2s"}
+INTERVAL=${INTERVAL:-"5m"}
+PORT_FILE="/tmp/port"
+DELUGE_HOST_FILE="/tmp/deluge-host-id"
+DELUGE_COOKIE_FILE="/tmp/deluge-cookie"
+CURL_OPTIONS="--fail-with-body --silent --max-time 10 --connect-timeout 5 --retry 3"
+
+source ./logging
+
+failed-wait-and-retry() {
+  if [[ -f /healthy ]]
+  then
+    rm /healthy
+  fi
+  log-debug "${BOLD}Retrying${RESET} in ${RETRY}"
+  sleep "${RETRY}"
+}
+
+success-wait() {
+  touch /healthy
+  log-debug "${BOLD}Waiting${RESET} ${INTERVAL} before next run"
+  sleep "${INTERVAL}"
+}
+
+# Validate environment variables
+ISSUES=()
+if [[ -z "${DELUGE_WEB_HOST}" ]]
+then
+  DELUGE_WEB_HOST=${DELUGE_WEB_HOST:-"deluge"}
+  log-information "DELUGE_WEB_HOST is not set. Defaulting to ${DELUGE_WEB_HOST}"
+fi
+if [[ -z "${DELUGE_WEB_PORT}" ]]
+then
+  DELUGE_WEB_PORT=${DELUGE_WEB_PORT:-"8112"}
+  log-information "DELUGE_WEB_PORT is not set. Defaulting to ${DELUGE_WEB_PORT}"
+fi
+if [[ -z "${DELUGE_PASSWORD}" ]]
+then
+  ISSUES+=("DELUGE_PASSWORD")
+fi
+if [[ "${#ISSUES[@]}" -gt 0 ]]
+then
+  log-error "Missing environment variables: ${ISSUES[*]}"
+  log-critical "Unable to continue"
+  sleep infinity
+fi
+DELUGE_API_ENDPOINT="http://${DELUGE_WEB_HOST}:${DELUGE_WEB_PORT}/json"
+
+touch "${PORT_FILE}"
+touch "${DELUGE_COOKIE_FILE}"
+touch "${DELUGE_HOST_FILE}"
+
+while true
+do
+  log-debug "${BOLD}Running${RESET} monitor"
+
+  # TODO: Only authenticate when cookie expired
+  log-debug "${BOLD}Authenticating${RESET} with Deluge API"
+  JSON=$(curl "${DELUGE_API_ENDPOINT}" \
+    ${CURL_OPTIONS} \
+    --header "Content-Type: application/json" \
+    --data '{"method": "auth.login", "params": ["'"${DELUGE_PASSWORD}"'"], "id": '${RANDOM}'}' \
+    --cookie-jar "${DELUGE_COOKIE_FILE}")
+  if [[ "${JSON}" == "" ]]
+  then
+    log-error "${BOLD}Empty${RESET} response from Deluge API"
+    failed-wait-and-retry
+    continue
+  elif [[ $(echo "${JSON}" | jq -r '.result') != "true" || $(echo "${JSON}" | jq -r '.error') != "null" ]]
+  then
+    log-error "${BOLD}Failed${RESET} to authenticate with Deluge API"
+    log-trace "${JSON}"
+    failed-wait-and-retry
+    continue
+  fi
+
+  HOST_ID=$(cat "${DELUGE_HOST_FILE}")
+  if [[ "${HOST_ID}" == "" ]]
+  then
+    log-debug "${BOLD}Listing${RESET} daemons as host ID is not set"
+    JSON=$(curl "${DELUGE_API_ENDPOINT}" \
+      ${CURL_OPTIONS} \
+      --header "Content-Type: application/json" \
+      --data '{"method": "web.get_hosts", "params": [], "id": '${RANDOM}'}' \
+      --cookie "${DELUGE_COOKIE_FILE}")
+    log-trace "${JSON}"
+    if [[ $(echo "${JSON}" | jq -r '.error') != "null" ]]
+    then
+      log-error "${BOLD}Failed${RESET} to list daemons"
+      log-trace "${JSON}"
+      failed-wait-and-retry
+      continue
+    fi
+
+    HOST_ID=$(echo "${JSON}" | jq -r '.result[0][0]')
+    echo "${HOST_ID}" > "${DELUGE_HOST_FILE}"
+  fi
+
+  log-debug "${BOLD}Checking${RESET} Deluge host status"
+  JSON=$(curl "${DELUGE_API_ENDPOINT}" \
+    ${CURL_OPTIONS} \
+    --header "Content-Type: application/json" \
+    --data '{"method": "web.get_host_status", "params": ["'"${HOST_ID}"'"], "id": '${RANDOM}'}' \
+    --cookie "${DELUGE_COOKIE_FILE}")
+  STATUS=$(echo "${JSON}" | jq -r '.result[1]')
+  if [[ "${JSON}" == "" ]]
+  then
+    log-error "${BOLD}Empty${RESET} response from Deluge API"
+    failed-wait-and-retry
+    continue
+  elif [[ $(echo "${JSON}" | jq -r '.error') != "null" ]]
+  then
+    log-error "${BOLD}Error${RESET} response from Deluge API"
+    log-trace "${JSON}"
+    failed-wait-and-retry
+    continue
+  elif [[ "${STATUS}" != "Connected" ]]
+  then
+    log-warning "Deluge host is ${STATUS} and not connected"
+    log-trace "${JSON}"
+
+    log-information "${BOLD}Connecting${RESET} Deluge daemon"
+    JSON=$(curl "${DELUGE_API_ENDPOINT}" \
+      ${CURL_OPTIONS} \
+      --header "Content-Type: application/json" \
+      --data '{"method": "web.connect", "params": ["'"${HOST_ID}"'"], "id": '${RANDOM}'}' \
+      --cookie "${DELUGE_COOKIE_FILE}")
+    if [[ "${JSON}" == "" ]]
+    then
+      log-error "${BOLD}Empty${RESET} response from Deluge API"
+    elif [[ $(echo "${JSON}" | jq -r '.error') != "null" ]]
+    then
+      log-error "${BOLD}Failed${RESET} to connect Deluge web client to daemon"
+      log-trace "${JSON}"
+    else
+      log-information "${BOLD}Requested${RESET} connect successfully"
+      log-trace "${JSON}"
+      # We still need to wait and retry
+    fi
+    failed-wait-and-retry
+    continue
+  else
+    log-information "Deluge host is connected"
+    log-trace "${JSON}"
+    success-wait
+  fi
+
+done
+
+echo "Service terminated"
+
+exit 1
