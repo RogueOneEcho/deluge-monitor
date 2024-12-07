@@ -51,7 +51,7 @@ jobs:
     - run: >
         docker buildx build .
         --build-arg VERSION=${{ needs.release.outputs.version }}
-        --tag ghcr.io/rogueoneecho/monitor:${{ needs.release.outputs.version }}
+        --tag ghcr.io/rogueoneecho/deluge-monitor:${{ needs.release.outputs.version }}
         --cache-from=type=local,src=/tmp/.buildx-cache
         --cache-to=type=local,dest=/tmp/.buildx-cache-new,mode=max
         --push
@@ -73,16 +73,16 @@ jobs:
       env:
         GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-    - run: docker pull ghcr.io/rogueoneecho/monitor:${{ needs.release.outputs.version }}
+    - run: docker pull ghcr.io/rogueoneecho/deluge-monitor:${{ needs.release.outputs.version }}
 
-    - run: docker tag ghcr.io/rogueoneecho/monitor:${{ needs.release.outputs.version }} ghcr.io/rogueoneecho/monitor:${{ github.ref_name }}
+    - run: docker tag ghcr.io/rogueoneecho/deluge-monitor:${{ needs.release.outputs.version }} ghcr.io/rogueoneecho/deluge-monitor:${{ github.ref_name }}
       if: ${{ github.ref_name == 'alpha' }}
 
-    - run: docker push ghcr.io/rogueoneecho/monitor:${{ github.ref_name }}
+    - run: docker push ghcr.io/rogueoneecho/deluge-monitor:${{ github.ref_name }}
       if: ${{ github.ref_name == 'alpha' }}
 
-    - run: docker tag ghcr.io/rogueoneecho/monitor:${{ needs.release.outputs.version }} ghcr.io/rogueoneecho/monitor:latest
+    - run: docker tag ghcr.io/rogueoneecho/deluge-monitor:${{ needs.release.outputs.version }} ghcr.io/rogueoneecho/deluge-monitor:latest
       if: ${{ ! contains(needs.release.outputs.version, '-') }}
 
-    - run: docker push ghcr.io/rogueoneecho/monitor:latest
+    - run: docker push ghcr.io/rogueoneecho/deluge-monitor:latest
       if: ${{ ! contains(needs.release.outputs.version, '-') }}
